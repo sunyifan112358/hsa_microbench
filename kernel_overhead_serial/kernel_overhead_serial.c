@@ -2,17 +2,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "hsa.h"
 #include "hsa_ext_finalize.h"
 
-#define NUM_KERNEL 100
+#define NUM_KERNEL 1000
 
 #define check(msg, status) \
 	if (status != HSA_STATUS_SUCCESS) { \
 		printf("%s failed.\n", #msg); \
 		exit(1); \
 	} else { \
-		printf("%s succeeded.\n", #msg); \
 	}
 
 /*
@@ -88,6 +88,8 @@ static hsa_status_t get_kernarg_memory_region(hsa_region_t region, void* data) {
 
 int main(int argc, char **argv) {
 	hsa_status_t err;
+	clock_t test_start, test_stop;
+	float diff = 0;
 
 	err = hsa_init();
 	check(Initializing the hsa runtime, err);
@@ -216,6 +218,11 @@ int main(int argc, char **argv) {
 	{
 		err=hsa_signal_create(1, 0, NULL, &(signal[i]));
 		check(Creating a HSA signal, err);
+	}
+
+	test_start = clock();
+	for (int i = 0; i < NUM_KERNEL; i++)
+	{
 
 		/*
 		 * Obtain the current queue write index.
@@ -262,6 +269,10 @@ int main(int argc, char **argv) {
 
 	}
 
+	test_stop = clock();
+	diff = (((float)test_stop - (float)test_start) / CLOCKS_PER_SEC ) * 1000;
+	printf("\n\tTest done, time: %f ms\n", diff);
+	
 	/*
 	 * Cleanup all allocated resources.
 	 */
