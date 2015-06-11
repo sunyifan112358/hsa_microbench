@@ -6,7 +6,7 @@
 #include "hsa.h"
 #include "hsa_ext_finalize.h"
 
-#define NUM_KERNEL 1000
+#define NUM_KERNEL 100000
 
 #define check(msg, status) \
 	if (status != HSA_STATUS_SUCCESS) { \
@@ -214,20 +214,17 @@ int main(int argc, char **argv) {
 	/*
 	 * Create a signal to wait for the dispatch to finish.
 	 */ 
-	hsa_signal_t signal[NUM_KERNEL];
-	uint64_t index;
-	for (int i = 0; i < NUM_KERNEL; i++)
-	{
-		err=hsa_signal_create(1, 0, NULL, &(signal[i]));
-		check(Creating a HSA signal, err);
-	}
+	hsa_signal_t signal;
+	err=hsa_signal_create(1, 0, NULL, &signal);
+	check(Creating a HSA signal, err);
 
 	/*
 	 * Create a packet template
 	 */
 	hsa_kernel_dispatch_packet_t packet_template;
-	packet_template.header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE;
-	packet_template.header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE;
+	memset(&packet_template, 0, sizeof(hsa_kernel_dispatch_packet_t));
+	//packet_template.header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE;
+	//packet_template.header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE;
 	packet_template.setup  |= 1 << HSA_KERNEL_DISPATCH_PACKET_SETUP_DIMENSIONS;
 	packet_template.workgroup_size_x = (uint16_t)1;
 	packet_template.workgroup_size_y = (uint16_t)1;
@@ -235,13 +232,15 @@ int main(int argc, char **argv) {
 	packet_template.grid_size_x = 1;
 	packet_template.grid_size_y = 1;
 	packet_template.grid_size_z = 1;
+	packet_template.completion_signal.handle = 0;
 	packet_template.kernel_object = kernel_object;
 	packet_template.kernarg_address = NULL;
 	packet_template.private_segment_size = private_segment_size;
 	packet_template.group_segment_size = group_segment_size;
 
-
-
+	// Set kernel packets
+	uint64_t index;
+	const uint32_t queueMask = queue->size - 1;
 	test_start = clock();
 	for (int i = 0; i < NUM_KERNEL; i++)
 	{
@@ -249,16 +248,12 @@ int main(int argc, char **argv) {
 		index = hsa_queue_load_write_index_relaxed(queue);
 
 		// Write the aql packet at the calculated queue index address.
-		const uint32_t queueMask = queue->size - 1;
 		hsa_kernel_dispatch_packet_t* dispatch_packet = 
 			&(((hsa_kernel_dispatch_packet_t*)(queue->base_address))[index&queueMask]);
 
 		// Copy packet template
 		memcpy(dispatch_packet, &packet_template, 
 				sizeof(hsa_kernel_dispatch_packet_t));
-
-		// Set packet completion signal
-		dispatch_packet->completion_signal = signal[i];
 
 		// Dispatch packet
 		__atomic_store_n((uint8_t*)(&dispatch_packet->header), 
@@ -267,32 +262,42 @@ int main(int argc, char **argv) {
 
 		// Set write index
 		hsa_queue_store_write_index_relaxed(queue, index+1);
+
+		/*
+		hsa_signal_store_relaxed(queue->doorbell_signal, index);
+		check(Dispatching the kernel, err);
+		*/
 	}
-		
+
+	// Set a barrier packet
+	hsa_barrier_or_packet_t barrier;
+	memset(&barrier, 0, sizeof(hsa_barrier_or_packet_t));
+	//barrier.header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE;
+	//barrier.header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE;
+	barrier.header |= 1 << HSA_PACKET_HEADER_BARRIER;
+	barrier.header |= HSA_PACKET_TYPE_BARRIER_OR << HSA_PACKET_HEADER_TYPE;
+	barrier.completion_signal = signal;
+	index = hsa_queue_load_write_index_relaxed(queue);
+	((hsa_barrier_or_packet_t *)(queue->base_address))[index&queueMask] = barrier;
+	hsa_queue_store_write_index_relaxed(queue, index + 1);
+
 	hsa_signal_store_relaxed(queue->doorbell_signal, index);
 	check(Dispatching the kernel, err);
 
-	for (int i = 0; i < NUM_KERNEL; i++)
-	{
-		// Wait on the dispatch completion signal until the kernel is finished.
-		hsa_signal_value_t value = hsa_signal_wait_acquire(signal[i],
-				HSA_SIGNAL_CONDITION_LT, 1, UINT64_MAX, 
-				HSA_WAIT_STATE_BLOCKED);
-
-	}
-
+	// Wait on the dispatch completion signal until the kernel is finished.
+	hsa_signal_value_t value = hsa_signal_wait_relaxed(signal,
+			HSA_SIGNAL_CONDITION_LT, 1, UINT64_MAX, 
+			HSA_WAIT_STATE_ACTIVE);
 
 	test_stop = clock();
 	diff = (((float)test_stop - (float)test_start) / CLOCKS_PER_SEC ) * 1000;
 	printf("\n\tTest done, time: %f ms\n", diff);
+
 	/*
 	 * Cleanup all allocated resources.
 	 */
-	for (int i = 0; i < NUM_KERNEL; i++)
-	{
-		err=hsa_signal_destroy(signal[i]);
-		check(Destroying the signal, err);
-	}
+	err=hsa_signal_destroy(signal);
+	check(Destroying the signal, err);
 
 	err=hsa_executable_destroy(executable);
 	check(Destroying the executable, err);

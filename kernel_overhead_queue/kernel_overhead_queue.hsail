@@ -2,5 +2,4 @@ module &_tmp_cloc15645_vector_copy_opt_bc:1:0:$full:$large:$default;
 
 prog kernel &empty_kernel()
 {
-	ret;
 };
