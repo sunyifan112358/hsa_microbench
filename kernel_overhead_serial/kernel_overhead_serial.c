@@ -6,7 +6,7 @@
 #include "hsa.h"
 #include "hsa_ext_finalize.h"
 
-#define NUM_KERNEL 1000
+#define NUM_KERNEL 100000
 
 #define check(msg, status) \
 	if (status != HSA_STATUS_SUCCESS) { \
@@ -88,8 +88,9 @@ static hsa_status_t get_kernarg_memory_region(hsa_region_t region, void* data) {
 
 int main(int argc, char **argv) {
 	hsa_status_t err;
-	clock_t test_start, test_stop;
-	float diff = 0;
+	
+	struct timespec start, end;
+	uint64_t diff = 0;
 
 	err = hsa_init();
 	check(Initializing the hsa runtime, err);
@@ -191,7 +192,7 @@ int main(int argc, char **argv) {
 	 * Extract the symbol from the executable.
 	 */
 	hsa_executable_symbol_t symbol;
-	err = hsa_executable_get_symbol(executable, "", "&empty_kernel", agent, 0, &symbol);
+	err = hsa_executable_get_symbol(executable, NULL, "&empty_kernel", agent, 0, &symbol);
 	check(Extract the symbol from the executable, err);
 
 	/*
@@ -220,7 +221,27 @@ int main(int argc, char **argv) {
 		check(Creating a HSA signal, err);
 	}
 
-	test_start = clock();
+	// Create a packet template
+	hsa_kernel_dispatch_packet_t packet_template;
+	memset(&packet_template, 0, sizeof(hsa_kernel_dispatch_packet_t));
+	//packet_template.header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE;
+	//packet_template.header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE;
+	packet_template.setup  |= 1 << HSA_KERNEL_DISPATCH_PACKET_SETUP_DIMENSIONS;
+	packet_template.workgroup_size_x = (uint16_t)1;
+	packet_template.workgroup_size_y = (uint16_t)1;
+	packet_template.workgroup_size_z = (uint16_t)1;
+	packet_template.grid_size_x = 1;
+	packet_template.grid_size_y = 1;
+	packet_template.grid_size_z = 1;
+	packet_template.completion_signal.handle = 0;
+	packet_template.kernel_object = kernel_object;
+	packet_template.kernarg_address = NULL;
+	packet_template.private_segment_size = private_segment_size;
+	packet_template.group_segment_size = group_segment_size;
+
+
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	for (int i = 0; i < NUM_KERNEL; i++)
 	{
 
@@ -235,20 +256,12 @@ int main(int argc, char **argv) {
 		const uint32_t queueMask = queue->size - 1;
 		hsa_kernel_dispatch_packet_t* dispatch_packet = &(((hsa_kernel_dispatch_packet_t*)(queue->base_address))[index&queueMask]);
 
-		dispatch_packet->header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE;
-		dispatch_packet->header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE;
-		dispatch_packet->setup  |= 1 << HSA_KERNEL_DISPATCH_PACKET_SETUP_DIMENSIONS;
-		dispatch_packet->workgroup_size_x = (uint16_t)1;
-		dispatch_packet->workgroup_size_y = (uint16_t)1;
-		dispatch_packet->workgroup_size_z = (uint16_t)1;
-		dispatch_packet->grid_size_x = 1;
-		dispatch_packet->grid_size_y = 1;
-		dispatch_packet->grid_size_z = 1;
+		// Copy packet template
+		memcpy(dispatch_packet, &packet_template, 
+				sizeof(hsa_kernel_dispatch_packet_t));
 		dispatch_packet->completion_signal = signal[i];
-		dispatch_packet->kernel_object = kernel_object;
-		dispatch_packet->kernarg_address = NULL;
-		dispatch_packet->private_segment_size = private_segment_size;
-		dispatch_packet->group_segment_size = group_segment_size;
+
+		// Dispatch packet
 		__atomic_store_n((uint8_t*)(&dispatch_packet->header), 
 				(uint8_t)HSA_PACKET_TYPE_KERNEL_DISPATCH, 
 				__ATOMIC_RELEASE);
@@ -269,9 +282,9 @@ int main(int argc, char **argv) {
 
 	}
 
-	test_stop = clock();
-	diff = (((float)test_stop - (float)test_start) / CLOCKS_PER_SEC ) * 1000;
-	printf("\n\tTest done, time: %f ms\n", diff);
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	diff = 1e9 * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
+	printf("\n\tTest done, time: %f ms\n", (float)diff / 1e6);
 	
 	/*
 	 * Cleanup all allocated resources.

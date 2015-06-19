@@ -1,0 +1,8 @@
+; -------- Disassembly --------------------
+shader main
+  asic(CI)
+  type(VS)
+
+  s_endpgm                                              // 000000000000: BF810000
+end
+
